@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from database import Base, engine
 
 from routes.auth import router as auth_router
@@ -11,6 +12,16 @@ import models.user
 import models.policy
 
 app = FastAPI(title="Lendrix - Process & Policies API")
+
+
+@app.exception_handler(RuntimeError)
+async def runtime_error_handler(request: Request, exc: RuntimeError):
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def generic_error_handler(request: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={"detail": "An unexpected error occurred"})
 #  integrartion
 app.add_middleware(
     CORSMiddleware,

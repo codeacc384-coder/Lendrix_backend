@@ -65,7 +65,10 @@ def generate_and_upload_policy_pdf(name: str, category: str, description: str, l
 
     bucket = os.getenv("BUCKET_NAME", "documents")
     object_key = existing_key if existing_key else f"policies/{uuid.uuid4()}_{name.replace(' ', '_')}.pdf"
-    s3 = _get_s3()
-    s3.upload_fileobj(buffer, bucket, object_key, ExtraArgs={"ContentType": "application/pdf", "ContentDisposition": "inline"})
+    try:
+        s3 = _get_s3()
+        s3.upload_fileobj(buffer, bucket, object_key, ExtraArgs={"ContentType": "application/pdf", "ContentDisposition": "inline"})
+    except Exception as e:
+        raise RuntimeError(f"Failed to upload policy document: {e}")
     document_url = f"{os.getenv('UTHO_ENDPOINT_URL', '').rstrip('/')}/{bucket}/{object_key}"
     return document_url, object_key
