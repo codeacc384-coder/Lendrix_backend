@@ -14,16 +14,14 @@ load_dotenv()
 from database import Base, engine
 import models  # triggers all model registrations
 
-TARGET = dict(
-    host="public-primary-pg-inbangalore-189799-1664910.db.onutho.com",
-    port=5432, dbname="LV_ProcessPolicies_DB",
-    user="dbadmin", password="MwUJ2C8ny@MGCnYR", sslmode="prefer"
-)
-SOURCE = dict(
-    host="public-primary-pg-inbangalore-189799-1664910.db.onutho.com",
-    port=5432, dbname="lendrixtest1",
-    user="dbadmin", password="MwUJ2C8ny@MGCnYR", sslmode="prefer"
-)
+_host = os.getenv("DB_HOST")
+_port = int(os.getenv("DB_PORT", 5432))
+_user = os.getenv("DB_USER")
+_password = os.getenv("DB_PASSWORD")
+_sslmode = os.getenv("DB_SSLMODE", "prefer")
+
+TARGET = dict(host=_host, port=_port, dbname=os.getenv("DB_TARGET_NAME", "LV_ProcessPolicies_DB"), user=_user, password=_password, sslmode=_sslmode)
+SOURCE = dict(host=_host, port=_port, dbname=os.getenv("DB_SOURCE_NAME", "lendrixtest1"), user=_user, password=_password, sslmode=_sslmode)
 
 MIGRATION_MAP = [
     ("locations",            "PP_Locations",            ["id","state","city","locality","pincode","latitude","longitude"]),

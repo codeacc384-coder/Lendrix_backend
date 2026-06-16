@@ -1,26 +1,19 @@
+import logging
+import os
+
+from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
 from database import get_db
 from models.policy import Policy, PolicyLimitation
 from models.user import User
 from routes.auth import get_current_user
-import boto3
-import os
-from dotenv import load_dotenv
+from routes.angel_vcs import _get_s3
 
 load_dotenv()
 
-
-def _get_s3():
-    endpoint = os.getenv("UTHO_ENDPOINT_URL", "").rstrip("/")
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.getenv("UTHO_ACCESS_KEY"),
-        aws_secret_access_key=os.getenv("UTHO_SECRET_KEY"),
-        config=boto3.session.Config(signature_version="s3v4")
-    )
-
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/team-access/policies", tags=["Team Access - Policy View"])
 compliance_router = APIRouter(prefix="/compliance-team/policies", tags=["Compliance Team - Policy View"])
@@ -51,7 +44,7 @@ def get_stats(db: Session = Depends(get_db), current_user: User = Depends(requir
     return {
         "active_policies": db.query(Policy).filter(Policy.is_active == True, Policy.is_accepted == True).count(),
         "total_policies": db.query(Policy).filter(Policy.is_accepted == True).count(),
-        "processes": 0
+        "processes": 0,
     }
 
 
@@ -62,8 +55,13 @@ def list_policies(db: Session = Depends(get_db), current_user: User = Depends(re
 
 @router.get("/limitations")
 def get_limitations(db: Session = Depends(get_db), current_user: User = Depends(require_team_access)):
-    accepted_ids = [p.id for p in db.query(Policy).filter(Policy.is_accepted == True).all()]
-    return [_limitation_dict(l) for l in db.query(PolicyLimitation).filter(PolicyLimitation.policy_id.in_(accepted_ids)).all()]
+    return [
+        _limitation_dict(l)
+        for l in db.query(PolicyLimitation)
+        .join(Policy, PolicyLimitation.policy_id == Policy.id)
+        .filter(Policy.is_accepted == True)
+        .all()
+    ]
 
 
 @router.get("/limitations/{policy_id}")
@@ -79,9 +77,17 @@ def team_view_policy_document(policy_id: int, db: Session = Depends(get_db), cur
     policy = db.query(Policy).filter(Policy.id == policy_id, Policy.is_accepted == True).first()
     if not policy or not policy.document_key:
         raise HTTPException(status_code=404, detail="Policy document not found")
-    s3 = _get_s3()
-    bucket = os.getenv("BUCKET_NAME", "documents")
-    presigned_url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"}, ExpiresIn=600)
+    try:
+        s3 = _get_s3()
+        bucket = os.getenv("BUCKET_NAME", "documents")
+        presigned_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"},
+            ExpiresIn=600,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for policy {policy_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate document URL")
     return {"view_url": presigned_url, "expires_in_seconds": 600}
 
 
@@ -100,7 +106,15 @@ def compliance_view_policy_document(policy_id: int, db: Session = Depends(get_db
     policy = db.query(Policy).filter(Policy.id == policy_id, Policy.is_accepted == True).first()
     if not policy or not policy.document_key:
         raise HTTPException(status_code=404, detail="Policy document not found")
-    s3 = _get_s3()
-    bucket = os.getenv("BUCKET_NAME", "documents")
-    presigned_url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"}, ExpiresIn=600)
+    try:
+        s3 = _get_s3()
+        bucket = os.getenv("BUCKET_NAME", "documents")
+        presigned_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"},
+            ExpiresIn=600,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for policy {policy_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate document URL")
     return {"view_url": presigned_url, "expires_in_seconds": 600}

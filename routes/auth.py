@@ -1,24 +1,33 @@
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPBearer
-from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
-from pydantic import BaseModel, EmailStr
-from typing import Optional
 from jose import JWTError, jwt
-from enum import Enum
-import os
+from pydantic import BaseModel, EmailStr, field_validator
+from sqlalchemy.orm import Session
 
 from database import get_db
-from models.user import User, AllowedEmail
-from utils import hash_password, verify_password, normalize_phone_number
+from models.user import AllowedEmail, User
+from utils import hash_password, normalize_phone_number, verify_password
 
-SECRET_KEY = os.getenv("SECRET_KEY", "fallback_secret")
+logger = logging.getLogger(__name__)
+
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not SECRET_KEY or SECRET_KEY == "your_super_secret_random_string_here":
+    raise RuntimeError("SECRET_KEY env var is not set or is using the default insecure value")
+
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = 10
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 
 security_scheme = HTTPBearer()
-
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
@@ -43,13 +52,17 @@ def _get_permissions(role_group: str) -> list:
     return ["read"]
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def create_access_token(email: str, role: str, role_group: str) -> str:
     payload = {
         "sub": email,
         "role": role,
         "role_group": role_group,
         "type": "access",
-        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        "exp": _utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -59,7 +72,7 @@ def create_refresh_token(email: str, role_group: str) -> str:
         "sub": email,
         "role_group": role_group,
         "type": "refresh",
-        "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        "exp": _utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -75,7 +88,7 @@ def get_current_user(token=Depends(security_scheme), db: Session = Depends(get_d
         if not email or not role or not role_group:
             raise HTTPException(status_code=401, detail="Invalid token")
     except JWTError as e:
-        if "expired" in str(e):
+        if "expired" in str(e).lower():
             raise HTTPException(status_code=401, detail="Access token has expired")
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -92,7 +105,7 @@ def require_admin_role(current_user: User = Depends(get_current_user)):
 
 
 def require_view_access(current_user: User = Depends(get_current_user)):
-    if current_user.role_group not in ("admin", "team_access", "client"):
+    if current_user.role_group not in ("admin", "team_access", "compliance_team"):
         raise HTTPException(status_code=403, detail="Access denied")
     return current_user
 
@@ -103,6 +116,20 @@ class RegisterRequest(BaseModel):
     password: str
     phone: str
     role: UserRole
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+    @field_validator("full_name")
+    @classmethod
+    def name_length(cls, v: Optional[str]) -> Optional[str]:
+        if v and len(v) > 255:
+            raise ValueError("full_name too long")
+        return v
 
 
 class LoginRequest(BaseModel):
@@ -121,6 +148,13 @@ class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
     confirm_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
 
 
 @router.post("/register")
@@ -151,10 +185,11 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         role=assigned_role,
         role_group=role_group,
         is_phone_verified=False,
-        phone=normalized_phone
+        phone=normalized_phone,
     )
     db.add(new_user)
     db.commit()
+    logger.info(f"New user registered: {data.email} role={assigned_role}")
     return {"message": "Registered successfully!", "role": assigned_role}
 
 
@@ -163,7 +198,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     role_group = _get_role_group(data.role.value)
     user = db.query(User).filter(User.email == data.email, User.role_group == role_group).first()
     if not user or not verify_password(data.password, user.password_hash):
-        raise HTTPException(status_code=400, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="Invalid email or password")
 
     access_token = create_access_token(email=user.email, role=user.role, role_group=role_group)
     refresh_token = create_refresh_token(email=user.email, role_group=role_group)
@@ -178,7 +213,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         "email": user.email,
         "full_name": user.full_name,
         "permissions": _get_permissions(role_group),
-        "session_timeout_minutes": ACCESS_TOKEN_EXPIRE_MINUTES
+        "session_timeout_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
     }
 
 
@@ -190,6 +225,8 @@ def refresh_token(body: RefreshTokenRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=401, detail="Invalid token type")
         email: str = payload.get("sub")
         role_group: str = payload.get("role_group")
+        if not email or not role_group:
+            raise HTTPException(status_code=401, detail="Invalid token")
     except JWTError:
         raise HTTPException(status_code=401, detail="Session expired. Please login again")
 
@@ -215,7 +252,7 @@ def get_me(current_user: User = Depends(get_current_user)):
         "full_name": current_user.full_name,
         "role": current_user.role,
         "phone": current_user.phone,
-        "permissions": _get_permissions(current_user.role_group)
+        "permissions": _get_permissions(current_user.role_group),
     }
 
 
@@ -231,4 +268,4 @@ def change_password(data: ChangePasswordRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     user.password_hash = hash_password(data.new_password)
     db.commit()
-    return {"message": "Password changed successfully !!!"}
+    return {"message": "Password changed successfully"}

@@ -1,17 +1,24 @@
+import logging
+import os
+
+import boto3
+from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
-from pydantic import BaseModel
+
 from database import get_db
 from models.policy import Policy, PolicyLimitation
 from models.user import User
 from routes.auth import require_admin_role
 from utils_document import generate_and_upload_policy_pdf
-import boto3
-import os
-from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/angel-vcs/policies", tags=["Angel & VCS - Policy Management"])
 
 
 def _get_s3():
@@ -21,11 +28,8 @@ def _get_s3():
         endpoint_url=endpoint,
         aws_access_key_id=os.getenv("UTHO_ACCESS_KEY"),
         aws_secret_access_key=os.getenv("UTHO_SECRET_KEY"),
-        config=boto3.session.Config(signature_version="s3v4")
+        config=boto3.session.Config(signature_version="s3v4"),
     )
-
-
-router = APIRouter(prefix="/angel-vcs/policies", tags=["Angel & VCS - Policy Management"])
 
 
 class PolicyCreate(BaseModel):
@@ -43,7 +47,7 @@ class PolicyUpdate(BaseModel):
 
 
 class PolicyDelete(BaseModel):
-    policy_id: Optional[int] = None
+    policy_id: int
 
 
 class LimitationCreate(BaseModel):
@@ -77,7 +81,7 @@ def get_stats(db: Session = Depends(get_db), current_user: User = Depends(requir
     return {
         "active_policies": db.query(Policy).filter(Policy.is_active == True, Policy.is_accepted == True).count(),
         "total_policies": db.query(Policy).filter(Policy.is_accepted == True).count(),
-        "processes": 0
+        "processes": 0,
     }
 
 
@@ -91,9 +95,17 @@ def view_policy_document(policy_id: int, db: Session = Depends(get_db), current_
     policy = db.query(Policy).filter(Policy.id == policy_id).first()
     if not policy or not policy.document_key:
         raise HTTPException(status_code=404, detail="Policy document not found")
-    s3 = _get_s3()
-    bucket = os.getenv("BUCKET_NAME", "documents")
-    presigned_url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"}, ExpiresIn=600)
+    try:
+        s3 = _get_s3()
+        bucket = os.getenv("BUCKET_NAME", "documents")
+        presigned_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"},
+            ExpiresIn=600,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for policy {policy_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate document URL")
     return {"view_url": presigned_url, "expires_in_seconds": 600}
 
 
@@ -114,10 +126,14 @@ def update_policy(data: PolicyUpdate, db: Session = Depends(get_db), current_use
     db_policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
-    if data.name is not None: db_policy.name = data.name
-    if data.category is not None: db_policy.category = data.category
-    if data.description is not None: db_policy.description = data.description
-    if data.is_active is not None: db_policy.is_active = data.is_active
+    if data.name is not None:
+        db_policy.name = data.name
+    if data.category is not None:
+        db_policy.category = data.category
+    if data.description is not None:
+        db_policy.description = data.description
+    if data.is_active is not None:
+        db_policy.is_active = data.is_active
     limitations = [{"title": l.title, "description": l.description, "is_enabled": l.is_enabled} for l in db.query(PolicyLimitation).filter(PolicyLimitation.policy_id == db_policy.id).all()]
     document_url, document_key = generate_and_upload_policy_pdf(name=db_policy.name, category=db_policy.category or "", description=db_policy.description or "", limitations=limitations, existing_key=db_policy.document_key)
     db_policy.document_url = document_url
@@ -136,7 +152,7 @@ def delete_policy(data: PolicyDelete, db: Session = Depends(get_db), current_use
             s3 = _get_s3()
             s3.delete_object(Bucket=os.getenv("BUCKET_NAME", "documents"), Key=db_policy.document_key)
         except Exception as e:
-            print(f"Warning: could not delete document from bucket: {e}")
+            logger.warning(f"Could not delete document from bucket for policy {data.policy_id}: {e}")
     db.delete(db_policy)
     db.commit()
     return {"message": "Policy deleted successfully"}
@@ -157,7 +173,7 @@ def save_limitation(data: LimitationCreate, db: Session = Depends(get_db), curre
     db_policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
-    new_limit = PolicyLimitation(policy_id=data.policy_id, title=data.title, description=data.description, is_enabled=data.is_enabled)
+    new_limit = PolicyLimitation(policy_id=data.policy_id, title=data.title, description=data.description, is_enabled=data.is_enabled if data.is_enabled is not None else True)
     db.add(new_limit)
     db.flush()
     limitations = [{"title": l.title, "description": l.description, "is_enabled": l.is_enabled} for l in db.query(PolicyLimitation).filter(PolicyLimitation.policy_id == data.policy_id).all()]
@@ -173,11 +189,16 @@ def update_limitation(data: LimitationUpdate, db: Session = Depends(get_db), cur
     limit = db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first()
     if not limit:
         raise HTTPException(status_code=404, detail="Limitation not found")
-    if data.title is not None: limit.title = data.title
-    if data.description is not None: limit.description = data.description
-    if data.is_enabled is not None: limit.is_enabled = data.is_enabled
+    if data.title is not None:
+        limit.title = data.title
+    if data.description is not None:
+        limit.description = data.description
+    if data.is_enabled is not None:
+        limit.is_enabled = data.is_enabled
     db.flush()
     db_policy = db.query(Policy).filter(Policy.id == limit.policy_id).first()
+    if not db_policy:
+        raise HTTPException(status_code=404, detail="Associated policy not found")
     limitations = [{"title": l.title, "description": l.description, "is_enabled": l.is_enabled} for l in db.query(PolicyLimitation).filter(PolicyLimitation.policy_id == limit.policy_id).all()]
     document_url, document_key = generate_and_upload_policy_pdf(name=db_policy.name, category=db_policy.category or "", description=db_policy.description or "", limitations=limitations, existing_key=db_policy.document_key)
     db_policy.document_url = document_url
@@ -195,6 +216,8 @@ def delete_limitation(data: LimitationDelete, db: Session = Depends(get_db), cur
     db.delete(limit)
     db.flush()
     db_policy = db.query(Policy).filter(Policy.id == policy_id).first()
+    if not db_policy:
+        raise HTTPException(status_code=404, detail="Associated policy not found")
     limitations = [{"title": l.title, "description": l.description, "is_enabled": l.is_enabled} for l in db.query(PolicyLimitation).filter(PolicyLimitation.policy_id == policy_id).all()]
     document_url, document_key = generate_and_upload_policy_pdf(name=db_policy.name, category=db_policy.category or "", description=db_policy.description or "", limitations=limitations, existing_key=db_policy.document_key)
     db_policy.document_url = document_url

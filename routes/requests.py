@@ -1,14 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from typing import Optional
-from pydantic import BaseModel
-from datetime import datetime
-from database import get_db
-from models.policy import Policy, PolicyLimitation, PolicyRequest, LimitationRequest, PolicyReview
-from models.user import User
-from routes.auth import require_admin_role, get_current_user
-from utils_document import generate_and_upload_policy_pdf
+import logging
 import os
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models.policy import LimitationRequest, Policy, PolicyLimitation, PolicyRequest, PolicyReview
+from models.user import User
+from routes.auth import get_current_user, require_admin_role
+from utils_document import generate_and_upload_policy_pdf
+from routes.angel_vcs import _get_s3
+
+logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def require_compliance_team(current_user: User = Depends(get_current_user)):
@@ -128,10 +138,10 @@ def compliance_submit_policy(data: PolicyRequestCreate, db: Session = Depends(ge
 
 @compliance_router.post("/submit-update")
 def compliance_submit_policy_update(data: PolicyRequestUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_compliance_team)):
-    if not db.query(Policy).filter(Policy.id == data.policy_id).first():
+    policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
+    if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
     _check_duplicate_policy_request(db, data.policy_id, "update")
-    policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
     req = PolicyRequest(action="update", policy_id=data.policy_id, description=data.description, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Policy update request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "policy_name": policy.name, "status": "pending"}
@@ -139,10 +149,10 @@ def compliance_submit_policy_update(data: PolicyRequestUpdate, db: Session = Dep
 
 @compliance_router.post("/submit-status")
 def compliance_submit_policy_status(data: PolicyRequestStatus, db: Session = Depends(get_db), current_user: User = Depends(require_compliance_team)):
-    if not db.query(Policy).filter(Policy.id == data.policy_id).first():
+    policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
+    if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
     _check_duplicate_policy_request(db, data.policy_id, "status")
-    policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
     req = PolicyRequest(action="status", policy_id=data.policy_id, is_active=data.is_active, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Policy status change request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "policy_name": policy.name, "status": "pending"}
@@ -165,9 +175,9 @@ def compliance_my_policies(db: Session = Depends(get_db), current_user: User = D
 
 @compliance_router.post("/limitations/submit-create")
 def compliance_submit_limitation_create(data: LimitationRequestCreate, db: Session = Depends(get_db), current_user: User = Depends(require_compliance_team)):
-    if not db.query(Policy).filter(Policy.id == data.policy_id).first():
-        raise HTTPException(status_code=404, detail="Policy not found")
     policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
     req = LimitationRequest(action="create", policy_id=data.policy_id, title=data.title, description=data.description, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Limitation create request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "policy_name": policy.name, "status": "pending"}
@@ -175,10 +185,10 @@ def compliance_submit_limitation_create(data: LimitationRequestCreate, db: Sessi
 
 @compliance_router.post("/limitations/submit-update")
 def compliance_submit_limitation_update(data: LimitationRequestUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_compliance_team)):
-    if not db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first():
+    limitation = db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first()
+    if not limitation:
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "update")
-    limitation = db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first()
     policy = db.query(Policy).filter(Policy.id == limitation.policy_id).first()
     req = LimitationRequest(action="update", limitation_id=data.limitation_id, description=data.description, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
@@ -187,10 +197,10 @@ def compliance_submit_limitation_update(data: LimitationRequestUpdate, db: Sessi
 
 @compliance_router.post("/limitations/submit-delete")
 def compliance_submit_limitation_delete(data: LimitationRequestDelete, db: Session = Depends(get_db), current_user: User = Depends(require_compliance_team)):
-    if not db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first():
+    limitation = db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first()
+    if not limitation:
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "delete")
-    limitation = db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first()
     policy = db.query(Policy).filter(Policy.id == limitation.policy_id).first()
     req = LimitationRequest(action="delete", limitation_id=data.limitation_id, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
@@ -219,6 +229,7 @@ def team_submit_policy_update(data: PolicyRequestUpdate, db: Session = Depends(g
     if not db.query(Policy).filter(Policy.id == data.policy_id).first():
         raise HTTPException(status_code=404, detail="Policy not found")
     _check_duplicate_policy_request(db, data.policy_id, "update")
+
     req = PolicyRequest(action="update", policy_id=data.policy_id, description=data.description, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Policy update request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "status": "pending"}
@@ -229,6 +240,7 @@ def team_submit_policy_status(data: PolicyRequestStatus, db: Session = Depends(g
     if not db.query(Policy).filter(Policy.id == data.policy_id).first():
         raise HTTPException(status_code=404, detail="Policy not found")
     _check_duplicate_policy_request(db, data.policy_id, "status")
+
     req = PolicyRequest(action="status", policy_id=data.policy_id, is_active=data.is_active, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Policy status change request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "status": "pending"}
@@ -253,6 +265,7 @@ def team_submit_limitation_update(data: LimitationRequestUpdate, db: Session = D
     if not db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first():
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "update")
+
     req = LimitationRequest(action="update", limitation_id=data.limitation_id, description=data.description, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Limitation update request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "status": "pending"}
@@ -263,6 +276,7 @@ def team_submit_limitation_delete(data: LimitationRequestDelete, db: Session = D
     if not db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first():
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "delete")
+
     req = LimitationRequest(action="delete", limitation_id=data.limitation_id, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Limitation delete request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "status": "pending"}
@@ -323,7 +337,7 @@ def approve_policy_request(data: ReviewRequest, db: Session = Depends(get_db), c
     else:
         raise HTTPException(status_code=400, detail="Unknown action type")
 
-    req.status = "approved"; req.admin_note = data.admin_note; req.reviewed_at = datetime.utcnow()
+    req.status = "approved"; req.admin_note = data.admin_note; req.reviewed_at = _utcnow()
     db.commit()
     return result
 
@@ -335,7 +349,7 @@ def reject_policy_request(data: ReviewRequest, db: Session = Depends(get_db), cu
         raise HTTPException(status_code=404, detail="Policy request not found")
     if req.status != "pending":
         raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
-    req.status = "rejected"; req.admin_note = data.admin_note; req.reviewed_at = datetime.utcnow()
+    req.status = "rejected"; req.admin_note = data.admin_note; req.reviewed_at = _utcnow()
     db.commit()
     return {"message": "Policy request rejected", "request_id": req.id, "policy_id": req.policy_id, "policy_name": _resolve_policy_name(db, req.policy_id, req.name)}
 
@@ -356,7 +370,7 @@ def approve_limitation_request(data: ReviewRequest, db: Session = Depends(get_db
     if req.status != "pending":
         raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
     if req.action == "create":
-        new_limit = PolicyLimitation(policy_id=req.policy_id, title=req.title, description=req.description, is_enabled=req.is_enabled)
+        new_limit = PolicyLimitation(policy_id=req.policy_id, title=req.title, description=req.description, is_enabled=req.is_enabled if req.is_enabled is not None else True)
         db.add(new_limit); db.flush()
         req.limitation_id = new_limit.id
         result = {"message": "Limitation created", "limitation_id": new_limit.id}
@@ -376,7 +390,7 @@ def approve_limitation_request(data: ReviewRequest, db: Session = Depends(get_db
         result = {"message": "Limitation deleted"}
     else:
         raise HTTPException(status_code=400, detail="Unknown action type")
-    req.status = "approved"; req.admin_note = data.admin_note; req.reviewed_at = datetime.utcnow()
+    req.status = "approved"; req.admin_note = data.admin_note; req.reviewed_at = _utcnow()
     db.commit()
     return result
 
@@ -388,7 +402,7 @@ def reject_limitation_request(data: ReviewRequest, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Limitation request not found")
     if req.status != "pending":
         raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
-    req.status = "rejected"; req.admin_note = data.admin_note; req.reviewed_at = datetime.utcnow()
+    req.status = "rejected"; req.admin_note = data.admin_note; req.reviewed_at = _utcnow()
     db.commit()
     return {"message": "Limitation request rejected", "request_id": req.id, "policy_id": req.policy_id, "policy_name": _resolve_policy_name(db, req.policy_id)}
 
@@ -404,10 +418,13 @@ def view_pending_acceptance_document(policy_id: int, db: Session = Depends(get_d
     policy = db.query(Policy).filter(Policy.id == policy_id, Policy.submitted_by_role == "compliance_team", Policy.is_accepted == False).first()
     if not policy or not policy.document_key:
         raise HTTPException(status_code=404, detail="Policy document not found")
-    from routes.angel_vcs import _get_s3
-    s3 = _get_s3()
-    bucket = os.getenv("BUCKET_NAME", "documents")
-    presigned_url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"}, ExpiresIn=600)
+    try:
+        s3 = _get_s3()
+        bucket = os.getenv("BUCKET_NAME", "documents")
+        presigned_url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": policy.document_key, "ResponseContentDisposition": "inline", "ResponseContentType": "application/pdf"}, ExpiresIn=600)
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for policy {policy_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate document URL")
     return {"view_url": presigned_url, "expires_in_seconds": 600}
 
 
@@ -447,12 +464,13 @@ def resolve_review(review_id: int, db: Session = Depends(get_db), current_user: 
     return {"message": "Review marked as resolved.", "review_id": rev.id, "policy_id": rev.policy_id, "policy_name": _resolve_policy_name(db, rev.policy_id)}
 
 
+
 # ── COMPLIANCE TEAM REVIEWS ───────────────────────────────────────────────────
 @review_router.post("/submit")
 def submit_review(data: PolicyReviewCreate, db: Session = Depends(get_db), current_user: User = Depends(require_compliance_team)):
-    if not db.query(Policy).filter(Policy.id == data.policy_id).first():
-        raise HTTPException(status_code=404, detail="Policy not found")
     policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
     rev = PolicyReview(policy_id=data.policy_id, reviewed_by=current_user.email, review=data.review, status="open")
     db.add(rev); db.commit(); db.refresh(rev)
     return {"message": "Review submitted successfully.", "review_id": rev.id, "policy_id": rev.policy_id, "policy_name": policy.name, "status": "open"}
