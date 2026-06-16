@@ -50,6 +50,7 @@ class LimitationCreate(BaseModel):
     policy_id: int
     title: str
     description: str
+    is_enabled: Optional[bool] = True
 
 
 class LimitationUpdate(BaseModel):
@@ -156,7 +157,7 @@ def save_limitation(data: LimitationCreate, db: Session = Depends(get_db), curre
     db_policy = db.query(Policy).filter(Policy.id == data.policy_id).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
-    new_limit = PolicyLimitation(policy_id=data.policy_id, title=data.title, description=data.description)
+    new_limit = PolicyLimitation(policy_id=data.policy_id, title=data.title, description=data.description, is_enabled=data.is_enabled)
     db.add(new_limit)
     db.flush()
     limitations = [{"title": l.title, "description": l.description, "is_enabled": l.is_enabled} for l in db.query(PolicyLimitation).filter(PolicyLimitation.policy_id == data.policy_id).all()]
