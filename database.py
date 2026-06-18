@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not found in .env file")
+    raise ValueError("DATABASE_URL environment variable is not set. Ensure .env file exists at the working directory or set it via systemd Environment.")
 
 # Normalise driver prefix — handle both psycopg and psycopg2 variants
 DATABASE_URL = (

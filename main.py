@@ -43,7 +43,7 @@ async def db_operational_error_handler(request: Request, exc: OperationalError):
 
 @app.exception_handler(SQLAlchemyError)
 async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
-    logger.error(f"SQLAlchemyError on {request.url}: {exc}")
+    logger.error(f"SQLAlchemyError on {request.url}: {type(exc).__name__}: {exc}")
     return JSONResponse(status_code=500, content={"detail": "A database error occurred."})
 
 
