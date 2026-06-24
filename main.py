@@ -1,4 +1,5 @@
 import logging
+import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -19,11 +20,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Fail hard at startup if SECRET_KEY is insecure — do not allow silent fallback
+_secret = os.getenv("SECRET_KEY", "")
+if not _secret or _secret == "your_super_secret_random_string_here":
+    raise RuntimeError("SECRET_KEY env var is not set or is using the insecure default value. Set a strong random SECRET_KEY before deploying.")
+
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+
 app = FastAPI(title="Lendrix - Process & Policies API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,7 +44,11 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
-    check_db_connection()
+    try:
+        check_db_connection()
+    except RuntimeError as e:
+        logger.error(f"Startup DB check failed: {e}. App will still start but DB may be unavailable.")
+        # Do not crash the process — let the app start and surface DB errors per-request
 
 
 @app.exception_handler(OperationalError)
@@ -73,3 +89,17 @@ app.include_router(compliance_policy_router)
 @app.get("/")
 def home():
     return {"msg": "Lendrix Process & Policies API is Online"}
+
+
+@app.get("/health")
+def health():
+    """Health check endpoint for DigitalOcean App Platform / load balancer probes."""
+    from database import engine
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok", "db": "connected"}
+    except OperationalError:
+        return JSONResponse(status_code=503, content={"status": "error", "db": "unavailable"})

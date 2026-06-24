@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -20,26 +21,45 @@ DATABASE_URL = (
     .replace("postgresql://", "postgresql+psycopg2://")
 )
 
+# DigitalOcean managed Postgres requires SSL and drops idle connections
+# connect_timeout raised to 30s to handle SSL handshake on cold deploy
+# pool_recycle set to 180s (well under DO's ~300s idle timeout)
+# pool_pre_ping=True re-validates connections before use (handles stale connections)
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_recycle=300,
+    pool_recycle=180,
     pool_size=5,
     max_overflow=10,
-    connect_args={"connect_timeout": 10},
+    pool_timeout=30,
+    connect_args={
+        "connect_timeout": 30,
+        "keepalives": 1,
+        "keepalives_idle": 60,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    },
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-def check_db_connection():
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        logger.info("Database connection OK")
-    except OperationalError as e:
-        logger.error(f"Database connection FAILED: {e}")
-        raise RuntimeError(f"Cannot connect to database: {e}")
+def check_db_connection(retries: int = 5, delay: int = 3):
+    """Retry DB connection on startup — handles DO deploy race conditions."""
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("Database connection OK")
+            return
+        except OperationalError as e:
+            last_error = e
+            logger.warning(f"DB connection attempt {attempt}/{retries} failed: {e}")
+            if attempt < retries:
+                time.sleep(delay)
+    logger.error(f"Database connection FAILED after {retries} attempts: {last_error}")
+    raise RuntimeError(f"Cannot connect to database after {retries} attempts: {last_error}")
 
 
 def get_db():

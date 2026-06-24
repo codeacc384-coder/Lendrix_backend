@@ -262,22 +262,22 @@ def team_submit_limitation_create(data: LimitationRequestCreate, db: Session = D
 
 @team_router.post("/limitations/submit-update")
 def team_submit_limitation_update(data: LimitationRequestUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_team_access)):
-    if not db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first():
+    limitation = db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first()
+    if not limitation:
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "update")
-
-    req = LimitationRequest(action="update", limitation_id=data.limitation_id, description=data.description, requested_by=current_user.email, status="pending")
+    req = LimitationRequest(action="update", policy_id=limitation.policy_id, limitation_id=data.limitation_id, description=data.description, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Limitation update request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "status": "pending"}
 
 
 @team_router.post("/limitations/submit-delete")
 def team_submit_limitation_delete(data: LimitationRequestDelete, db: Session = Depends(get_db), current_user: User = Depends(require_team_access)):
-    if not db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first():
+    limitation = db.query(PolicyLimitation).filter(PolicyLimitation.id == data.limitation_id).first()
+    if not limitation:
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "delete")
-
-    req = LimitationRequest(action="delete", limitation_id=data.limitation_id, requested_by=current_user.email, status="pending")
+    req = LimitationRequest(action="delete", policy_id=limitation.policy_id, limitation_id=data.limitation_id, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Limitation delete request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": req.policy_id, "status": "pending"}
 
