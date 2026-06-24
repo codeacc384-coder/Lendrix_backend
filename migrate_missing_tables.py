@@ -40,6 +40,16 @@ def create_tables():
     Base.metadata.create_all(bind=engine, checkfirst=True)
     print("Tables created (existing tables untouched).")
 
+ALLOWED_SOURCE_TABLES = {entry[0] for entry in MIGRATION_MAP}
+ALLOWED_TARGET_TABLES = {entry[1] for entry in MIGRATION_MAP}
+ALLOWED_COLUMNS = {col for entry in MIGRATION_MAP for col in entry[2]}
+
+
+def _safe_col_list(cols):
+    """Quote each column name to prevent SQL injection if the map is ever extended."""
+    return ", ".join(f'"{c}"' for c in cols)
+
+
 def migrate_data():
     src = psycopg2.connect(**SOURCE)
     tgt = psycopg2.connect(**TARGET)
@@ -47,13 +57,13 @@ def migrate_data():
     tgt_cur = tgt.cursor()
 
     for src_table, tgt_table, cols in MIGRATION_MAP:
-        col_list = ", ".join(cols)
+        col_list = _safe_col_list(cols)
         placeholders = ", ".join(["%s"] * len(cols))
 
-        tgt_cur.execute(f"SELECT COUNT(*) FROM \"{tgt_table}\"")
+        tgt_cur.execute(f'SELECT COUNT(*) FROM "{tgt_table}"')
         existing = tgt_cur.fetchone()[0]
 
-        src_cur.execute(f"SELECT {col_list} FROM {src_table}")
+        src_cur.execute(f'SELECT {col_list} FROM "{src_table}"')
         rows = src_cur.fetchall()
 
         if existing > 0:

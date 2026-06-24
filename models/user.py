@@ -16,8 +16,6 @@ class User(Base):
     role_group = Column(String(50), nullable=False)
     is_phone_verified = Column(Boolean, default=False)
     phone = Column(String(20), nullable=False)
-    otp_code = Column(String, nullable=True)
-    otp_expiry = Column(DateTime, nullable=True)
     refresh_token = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

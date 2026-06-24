@@ -9,7 +9,7 @@ from database import get_db
 from models.policy import Policy, PolicyLimitation
 from models.user import User
 from routes.auth import get_current_user
-from routes.angel_vcs import _get_s3
+from utils_document import get_s3_client
 
 load_dotenv()
 
@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/team-access/policies", tags=["Team Access - Policy View"])
 compliance_router = APIRouter(prefix="/compliance-team/policies", tags=["Compliance Team - Policy View"])
+
+
+def _get_s3():
+    return get_s3_client()
 
 
 def require_team_access(current_user: User = Depends(get_current_user)):

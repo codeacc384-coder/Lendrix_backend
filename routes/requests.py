@@ -11,10 +11,13 @@ from database import get_db
 from models.policy import LimitationRequest, Policy, PolicyLimitation, PolicyRequest, PolicyReview
 from models.user import User
 from routes.auth import get_current_user, require_admin_role
-from utils_document import generate_and_upload_policy_pdf
-from routes.angel_vcs import _get_s3
+from utils_document import generate_and_upload_policy_pdf, get_s3_client
 
 logger = logging.getLogger(__name__)
+
+
+def _get_s3():
+    return get_s3_client()
 
 
 def _utcnow() -> datetime:
@@ -97,16 +100,23 @@ def _resolve_policy_name(db, policy_id, fallback_name=None):
     return fallback_name
 
 
-def _policy_req_dict(r, db=None):
+def _policy_req_dict(r, user_map=None, policy_map=None):
     requested_by = r.requested_by
-    policy_name = r.name  # for action="create", name is on the request itself
-    if db:
-        user = db.query(User).filter(User.email == r.requested_by).first()
-        if user and user.full_name:
-            requested_by = user.full_name
-        if r.policy_id:
-            policy_name = _resolve_policy_name(db, r.policy_id, r.name)
+    policy_name = r.name
+    if user_map and r.requested_by in user_map:
+        requested_by = user_map[r.requested_by] or r.requested_by
+    if policy_map and r.policy_id and r.policy_id in policy_map:
+        policy_name = policy_map[r.policy_id]
     return {"id": r.id, "action": r.action, "policy_id": r.policy_id, "policy_name": policy_name, "name": r.name, "category": r.category, "description": r.description, "is_active": r.is_active, "requested_by": requested_by, "status": r.status, "admin_note": r.admin_note, "created_at": str(r.created_at), "reviewed_at": str(r.reviewed_at) if r.reviewed_at else None}
+
+
+def _build_maps(db, requests):
+    """Build user and policy lookup maps to avoid N+1 queries during serialization."""
+    emails = {r.requested_by for r in requests}
+    policy_ids = {r.policy_id for r in requests if r.policy_id}
+    user_map = {u.email: u.full_name for u in db.query(User).filter(User.email.in_(emails)).all()}
+    policy_map = {p.id: p.name for p in db.query(Policy).filter(Policy.id.in_(policy_ids)).all()} if policy_ids else {}
+    return user_map, policy_map
 
 
 def _limit_req_dict(r, db=None):
@@ -160,7 +170,9 @@ def compliance_submit_policy_status(data: PolicyRequestStatus, db: Session = Dep
 
 @compliance_router.get("/my-requests")
 def compliance_my_requests(db: Session = Depends(get_db), current_user: User = Depends(require_compliance_team)):
-    return [_policy_req_dict(r, db) for r in db.query(PolicyRequest).filter(PolicyRequest.requested_by == current_user.email).all()]
+    reqs = db.query(PolicyRequest).filter(PolicyRequest.requested_by == current_user.email).all()
+    user_map, policy_map = _build_maps(db, reqs)
+    return [_policy_req_dict(r, user_map, policy_map) for r in reqs]
 
 
 @compliance_router.get("/my-policies")
@@ -248,7 +260,9 @@ def team_submit_policy_status(data: PolicyRequestStatus, db: Session = Depends(g
 
 @team_router.get("/my-requests")
 def team_my_requests(db: Session = Depends(get_db), current_user: User = Depends(require_team_access)):
-    return [_policy_req_dict(r, db) for r in db.query(PolicyRequest).filter(PolicyRequest.requested_by == current_user.email).all()]
+    reqs = db.query(PolicyRequest).filter(PolicyRequest.requested_by == current_user.email).all()
+    user_map, policy_map = _build_maps(db, reqs)
+    return [_policy_req_dict(r, user_map, policy_map) for r in reqs]
 
 
 @team_router.post("/limitations/submit-create")
@@ -293,7 +307,9 @@ def list_policy_requests(status: Optional[str] = None, db: Session = Depends(get
     query = db.query(PolicyRequest)
     if status:
         query = query.filter(PolicyRequest.status == status)
-    return [_policy_req_dict(r, db) for r in query.order_by(PolicyRequest.created_at.desc()).all()]
+    reqs = query.order_by(PolicyRequest.created_at.desc()).all()
+    user_map, policy_map = _build_maps(db, reqs)
+    return [_policy_req_dict(r, user_map, policy_map) for r in reqs]
 
 
 @admin_router.put("/approve")

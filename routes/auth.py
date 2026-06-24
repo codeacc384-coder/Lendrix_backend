@@ -255,15 +255,14 @@ def get_me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/change-password")
-def change_password(data: ChangePasswordRequest, db: Session = Depends(get_db)):
+def change_password(data: ChangePasswordRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if data.new_password != data.confirm_password:
         raise HTTPException(status_code=400, detail="New password and confirm password do not match")
     role_group = _get_role_group(data.role.value)
-    user = db.query(User).filter(User.email == data.email, User.role_group == role_group).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if not verify_password(data.current_password, user.password_hash):
+    if current_user.email != data.email or current_user.role_group != role_group:
+        raise HTTPException(status_code=403, detail="You can only change your own password")
+    if not verify_password(data.current_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    user.password_hash = hash_password(data.new_password)
+    current_user.password_hash = hash_password(data.new_password)
     db.commit()
     return {"message": "Password changed successfully"}

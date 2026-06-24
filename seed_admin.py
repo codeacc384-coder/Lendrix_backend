@@ -6,11 +6,14 @@ Creates initial admin users in PP_Users and PP_AllowedEmails.
 Run from inside the process_and_policies directory:
     python seed_admin.py
 
-Edit the ADMIN_USERS list below before running.
+Set these env vars before running (or add to .env):
+    SEED_ANGEL_EMAIL, SEED_ANGEL_PHONE, SEED_ANGEL_PASSWORD
+    SEED_VCS_EMAIL,   SEED_VCS_PHONE,   SEED_VCS_PASSWORD
 """
 
 import uuid
 import sys
+import os
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -20,24 +23,31 @@ from database import SessionLocal
 from models.user import User, AllowedEmail
 from utils import hash_password, normalize_phone_number
 
-# ── Configure your admin users here ──────────────────────────────────────────
+
+def _require_env(key: str) -> str:
+    val = os.getenv(key)
+    if not val:
+        print(f"ERROR: Environment variable '{key}' is not set. Aborting.")
+        sys.exit(1)
+    return val
+
+
 ADMIN_USERS = [
     {
         "full_name": "Angel Admin",
-        "email": "angel@lendrixventech.com",
-        "password": "Admin@1234",
-        "phone": "+919999999901",
-        "role": "angel",           # angel | vcs | compliance_team | team_access
+        "email": _require_env("SEED_ANGEL_EMAIL"),
+        "password": _require_env("SEED_ANGEL_PASSWORD"),
+        "phone": _require_env("SEED_ANGEL_PHONE"),
+        "role": "angel",
     },
     {
         "full_name": "VCS Admin",
-        "email": "vcs@lendrixventech.com",
-        "password": "Admin@1234",
-        "phone": "+919999999902",
+        "email": _require_env("SEED_VCS_EMAIL"),
+        "password": _require_env("SEED_VCS_PASSWORD"),
+        "phone": _require_env("SEED_VCS_PHONE"),
         "role": "vcs",
     },
 ]
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def get_role_group(role: str) -> str:

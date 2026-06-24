@@ -1,7 +1,6 @@
 import logging
 import os
 
-import boto3
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -12,7 +11,7 @@ from database import get_db
 from models.policy import Policy, PolicyLimitation
 from models.user import User
 from routes.auth import require_admin_role
-from utils_document import generate_and_upload_policy_pdf
+from utils_document import generate_and_upload_policy_pdf, get_s3_client
 
 load_dotenv()
 
@@ -22,14 +21,7 @@ router = APIRouter(prefix="/angel-vcs/policies", tags=["Angel & VCS - Policy Man
 
 
 def _get_s3():
-    endpoint = os.getenv("UTHO_ENDPOINT_URL", "").rstrip("/")
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.getenv("UTHO_ACCESS_KEY"),
-        aws_secret_access_key=os.getenv("UTHO_SECRET_KEY"),
-        config=boto3.session.Config(signature_version="s3v4"),
-    )
+    return get_s3_client()
 
 
 class PolicyCreate(BaseModel):
@@ -160,7 +152,13 @@ def delete_policy(data: PolicyDelete, db: Session = Depends(get_db), current_use
 
 @router.get("/limitations")
 def get_limitations(db: Session = Depends(get_db), current_user: User = Depends(require_admin_role)):
-    return [_limitation_dict(l) for l in db.query(PolicyLimitation).all()]
+    return [
+        _limitation_dict(l)
+        for l in db.query(PolicyLimitation)
+        .join(Policy, PolicyLimitation.policy_id == Policy.id)
+        .filter(Policy.is_accepted == True)
+        .all()
+    ]
 
 
 @router.get("/limitations/{policy_id}")

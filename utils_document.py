@@ -11,16 +11,26 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 
 load_dotenv()
 
+_s3_client = None
 
-def _get_s3():
-    endpoint = os.getenv("UTHO_ENDPOINT_URL", "").rstrip("/")
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.getenv("UTHO_ACCESS_KEY"),
-        aws_secret_access_key=os.getenv("UTHO_SECRET_KEY"),
-        config=boto3.session.Config(signature_version="s3v4")
-    )
+
+def get_s3_client():
+    """Return a module-level singleton S3 client to avoid creating a new connection on every call."""
+    global _s3_client
+    if _s3_client is None:
+        endpoint = os.getenv("UTHO_ENDPOINT_URL", "").rstrip("/")
+        _s3_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=os.getenv("UTHO_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("UTHO_SECRET_KEY"),
+            config=boto3.session.Config(signature_version="s3v4")
+        )
+    return _s3_client
+
+
+# Keep _get_s3 as an alias so existing internal calls still work
+_get_s3 = get_s3_client
 
 
 def generate_and_upload_policy_pdf(name: str, category: str, description: str, limitations: list[dict], existing_key: str = None) -> tuple[str, str]:
