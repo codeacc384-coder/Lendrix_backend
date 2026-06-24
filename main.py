@@ -14,6 +14,7 @@ from routes.team import router as team_policy_router, compliance_router as compl
 import models.user
 import models.policy
 
+# Configure logging first so all startup errors are properly formatted
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",

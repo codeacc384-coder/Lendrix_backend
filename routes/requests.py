@@ -190,7 +190,7 @@ def compliance_submit_limitation_update(data: LimitationRequestUpdate, db: Sessi
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "update")
     policy = db.query(Policy).filter(Policy.id == limitation.policy_id).first()
-    req = LimitationRequest(action="update", limitation_id=data.limitation_id, description=data.description, requested_by=current_user.email, status="pending")
+    req = LimitationRequest(action="update", policy_id=limitation.policy_id, limitation_id=data.limitation_id, description=data.description, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Limitation update request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": policy.id, "policy_name": policy.name, "status": "pending"}
 
@@ -202,7 +202,7 @@ def compliance_submit_limitation_delete(data: LimitationRequestDelete, db: Sessi
         raise HTTPException(status_code=404, detail="Limitation not found")
     _check_duplicate_limitation_request(db, data.limitation_id, "delete")
     policy = db.query(Policy).filter(Policy.id == limitation.policy_id).first()
-    req = LimitationRequest(action="delete", limitation_id=data.limitation_id, requested_by=current_user.email, status="pending")
+    req = LimitationRequest(action="delete", policy_id=limitation.policy_id, limitation_id=data.limitation_id, requested_by=current_user.email, status="pending")
     db.add(req); db.commit(); db.refresh(req)
     return {"message": "Limitation delete request submitted. Awaiting admin approval.", "request_id": req.id, "policy_id": policy.id, "policy_name": policy.name, "status": "pending"}
 
