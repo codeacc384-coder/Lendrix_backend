@@ -1,7 +1,7 @@
 import logging
 import os
 
-from dotenv import load_dotenv
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,7 @@ from models.user import User
 from routes.auth import get_current_user
 from utils_document import get_s3_client
 
-load_dotenv()
+
 
 logger = logging.getLogger(__name__)
 
