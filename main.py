@@ -92,6 +92,29 @@ def home():
     return {"msg": "Lendrix Process & Policies API is Online"}
 
 
+@app.get("/debug/db-check")
+def debug_db_check():
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    try:
+        with engine.connect() as conn:
+            db_name = conn.execute(text("SELECT current_database()")).scalar()
+            db_host = conn.execute(text("SELECT inet_server_addr()")).scalar()
+            user_count = conn.execute(text('SELECT COUNT(*) FROM "PP_Users"')).scalar()
+            allowed_count = conn.execute(text('SELECT COUNT(*) FROM "PP_AllowedEmails"')).scalar()
+            deepak = conn.execute(text('SELECT email, role, role_group FROM "PP_Users" WHERE email = \'deepakdash@lendrixventech.com\'')).fetchone()
+        return {
+            "connected_db": db_name,
+            "connected_host": str(db_host),
+            "PP_Users_count": user_count,
+            "PP_AllowedEmails_count": allowed_count,
+            "deepak_user_exists": deepak is not None,
+            "deepak_row": {"email": deepak[0], "role": deepak[1], "role_group": deepak[2]} if deepak else None,
+        }
+    except OperationalError as e:
+        return {"error": str(e)}
+
+
 @app.get("/health")
 def health():
     """Health check endpoint for DigitalOcean App Platform / load balancer probes."""
